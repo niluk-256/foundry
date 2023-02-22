@@ -84,6 +84,8 @@ pub struct NodeConfig {
     pub chain_id: Option<u64>,
     /// Default gas limit for all txs
     pub gas_limit: U256,
+    /// If set to `true`, disables the block gas limit
+    pub disable_block_gas_limit: bool,
     /// Default gas price for all txs
     pub gas_price: Option<U256>,
     /// Default base fee
@@ -144,8 +146,10 @@ pub struct NodeConfig {
     pub enable_steps_tracing: bool,
     /// Configure the code size limit
     pub code_size_limit: Option<usize>,
-    /// If set to true, remove historic state entirely
-    pub prune_history: bool,
+    /// Configures how to remove historic state.
+    ///
+    /// If set to `Some(num)` keep latest num state in memory only.
+    pub prune_history: PruneStateHistoryConfig,
     /// The file where to load the state from
     pub init_state: Option<SerializableState>,
     /// max number of blocks with transactions in memory
@@ -337,6 +341,7 @@ impl Default for NodeConfig {
         Self {
             chain_id: None,
             gas_limit: U256::from(30_000_000),
+            disable_block_gas_limit: false,
             gas_price: None,
             hardfork: None,
             signer_accounts: genesis_accounts.clone(),
@@ -370,7 +375,7 @@ impl Default for NodeConfig {
             compute_units_per_second: ALCHEMY_FREE_TIER_CUPS,
             ipc_path: None,
             code_size_limit: None,
-            prune_history: false,
+            prune_history: Default::default(),
             init_state: None,
             transaction_block_keeper: None,
         }
@@ -444,6 +449,15 @@ impl NodeConfig {
         self
     }
 
+    /// Disable block gas limit check
+    ///
+    /// If set to `true` block gas limit will not be enforced
+    #[must_use]
+    pub fn disable_block_gas_limit(mut self, disable_block_gas_limit: bool) -> Self {
+        self.disable_block_gas_limit = disable_block_gas_limit;
+        self
+    }
+
     /// Sets the gas price
     #[must_use]
     pub fn with_gas_price<U: Into<U256>>(mut self, gas_price: Option<U>) -> Self {
@@ -453,8 +467,8 @@ impl NodeConfig {
 
     /// Sets prune history status.
     #[must_use]
-    pub fn set_pruned_history(mut self, prune_history: bool) -> Self {
-        self.prune_history = prune_history;
+    pub fn set_pruned_history(mut self, prune_history: Option<Option<usize>>) -> Self {
+        self.prune_history = PruneStateHistoryConfig::from_args(prune_history);
         self
     }
 
@@ -745,6 +759,7 @@ impl NodeConfig {
                 // If EIP-3607 is enabled it can cause issues during fuzz/invariant tests if the
                 // caller is a contract. So we disable the check by default.
                 disable_eip3607: true,
+                disable_block_gas_limit: self.disable_block_gas_limit,
                 ..Default::default()
             },
             block: BlockEnv {
@@ -967,6 +982,30 @@ impl NodeConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PruneStateHistoryConfig {
+    pub enabled: bool,
+    pub max_memory_history: Option<usize>,
+}
+
+// === impl PruneStateHistoryConfig ===
+
+impl PruneStateHistoryConfig {
+    /// Returns `true` if writing state history is supported
+    pub fn is_state_history_supported(&self) -> bool {
+        !self.enabled || self.max_memory_history.is_some()
+    }
+
+    /// Returns tru if this setting was enabled.
+    pub fn is_config_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub fn from_args(val: Option<Option<usize>>) -> Self {
+        val.map(|max_memory_history| Self { enabled: true, max_memory_history }).unwrap_or_default()
+    }
+}
+
 /// Can create dev accounts
 #[derive(Debug, Clone)]
 pub struct AccountGenerator {
@@ -1068,4 +1107,19 @@ async fn find_latest_fork_block<M: Middleware>(provider: M) -> Result<u64, M::Er
     }
 
     Ok(num)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_prune_history() {
+        let config = PruneStateHistoryConfig::default();
+        assert!(config.is_state_history_supported());
+        let config = PruneStateHistoryConfig::from_args(Some(None));
+        assert!(!config.is_state_history_supported());
+        let config = PruneStateHistoryConfig::from_args(Some(Some(10)));
+        assert!(config.is_state_history_supported());
+    }
 }

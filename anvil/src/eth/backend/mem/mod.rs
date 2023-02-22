@@ -1,5 +1,6 @@
 //! In memory blockchain backend
 use crate::{
+    config::PruneStateHistoryConfig,
     eth::{
         backend::{
             cheats::CheatsManager,
@@ -7,6 +8,7 @@ use crate::{
             executor::{ExecutedTransactions, TransactionExecutor},
             fork::ClientFork,
             genesis::GenesisConfig,
+            mem::storage::MinedTransactionReceipt,
             notifications::{NewBlockNotification, NewBlockNotifications},
             time::{utc_from_secs, TimeManager},
             validate::TransactionValidator,
@@ -41,17 +43,17 @@ use anvil_core::{
 use anvil_rpc::error::RpcError;
 use ethers::{
     abi::ethereum_types::BigEndianHash,
-    prelude::{BlockNumber, TxHash, H256, U256, U64},
+    prelude::{BlockNumber, GethTraceFrame, TxHash, H256, U256, U64},
     types::{
-        transaction::eip2930::AccessList, Address, Block as EthersBlock, BlockId, Bytes, Filter,
-        FilteredParams, GethDebugTracingOptions, GethTrace, Log, Trace, Transaction,
-        TransactionReceipt,
+        transaction::eip2930::AccessList, Address, Block as EthersBlock, BlockId, Bytes,
+        DefaultFrame, Filter, FilteredParams, GethDebugTracingOptions, GethTrace, Log, Trace,
+        Transaction, TransactionReceipt,
     },
-    utils::{get_contract_address, keccak256, rlp},
+    utils::{get_contract_address, hex, keccak256, rlp},
 };
 use forge::{
     executor::inspector::AccessListTracer,
-    revm::{return_ok, return_revert, BlockEnv, ExecutionResult, Return},
+    revm::{return_ok, BlockEnv, ExecutionResult, Return},
 };
 use foundry_evm::{
     decode::decode_revert,
@@ -143,8 +145,8 @@ pub struct Backend {
     /// keeps track of active snapshots at a specific block
     active_snapshots: Arc<Mutex<HashMap<U256, (u64, H256)>>>,
     enable_steps_tracing: bool,
-    /// Whether to keep history state
-    prune_history: bool,
+    /// How to keep history state
+    prune_state_history_config: PruneStateHistoryConfig,
     /// max number of blocks with transactions in memory
     transaction_block_keeper: Option<usize>,
 }
@@ -159,7 +161,7 @@ impl Backend {
         fees: FeeManager,
         fork: Option<ClientFork>,
         enable_steps_tracing: bool,
-        prune_history: bool,
+        prune_state_history_config: PruneStateHistoryConfig,
         transaction_block_keeper: Option<usize>,
         automine_block_time: Option<Duration>,
     ) -> Self {
@@ -177,10 +179,22 @@ impl Backend {
 
         let start_timestamp =
             if let Some(fork) = fork.as_ref() { fork.timestamp() } else { genesis.timestamp };
+
+        let states = if prune_state_history_config.is_config_enabled() {
+            // if prune state history is enabled, configure the state cache only for memory
+            prune_state_history_config
+                .max_memory_history
+                .map(InMemoryBlockStates::new)
+                .unwrap_or_default()
+                .memory_only()
+        } else {
+            Default::default()
+        };
+
         let backend = Self {
             db,
             blockchain,
-            states: Arc::new(RwLock::new(Default::default())),
+            states: Arc::new(RwLock::new(states)),
             env,
             fork,
             time: TimeManager::new(start_timestamp),
@@ -190,7 +204,7 @@ impl Backend {
             genesis,
             active_snapshots: Arc::new(Mutex::new(Default::default())),
             enable_steps_tracing,
-            prune_history,
+            prune_state_history_config,
             transaction_block_keeper,
         };
 
@@ -439,9 +453,35 @@ impl Backend {
         self.db.write().await.set_storage_at(address, slot, val.into_uint())
     }
 
+    /// Returns the configured specid
+    pub fn spec_id(&self) -> SpecId {
+        self.env.read().cfg.spec_id
+    }
+
     /// Returns true for post London
     pub fn is_eip1559(&self) -> bool {
-        (self.env().read().cfg.spec_id as u8) >= (SpecId::LONDON as u8)
+        (self.spec_id() as u8) >= (SpecId::LONDON as u8)
+    }
+
+    /// Returns true for post Berlin
+    pub fn is_eip2930(&self) -> bool {
+        (self.spec_id() as u8) >= (SpecId::BERLIN as u8)
+    }
+
+    /// Returns an error if EIP1559 is not active (pre Berlin)
+    pub fn ensure_eip1559_active(&self) -> Result<(), BlockchainError> {
+        if self.is_eip1559() {
+            return Ok(())
+        }
+        Err(BlockchainError::EIP1559TransactionUnsupportedAtHardfork)
+    }
+
+    /// Returns an error if EIP1559 is not active (pre muirGlacier)
+    pub fn ensure_eip2930_active(&self) -> Result<(), BlockchainError> {
+        if self.is_eip2930() {
+            return Ok(())
+        }
+        Err(BlockchainError::EIP2930TransactionUnsupportedAtHardfork)
     }
 
     /// Returns the block gas limit
@@ -669,7 +709,7 @@ impl Backend {
 
             let best_hash = self.blockchain.storage.read().best_hash;
 
-            if !self.prune_history {
+            if self.prune_state_history_config.is_state_history_supported() {
                 let db = self.db.read().await.current_state();
                 // store current state before executing all transactions
                 self.states.write().insert(best_hash, db);
@@ -732,16 +772,28 @@ impl Backend {
                     node_info!("    Gas used: {}", receipt.gas_used());
                     match info.exit {
                         return_ok!() => (),
-                        return_revert!() => {
+                        Return::OutOfFund => {
+                            node_info!("    Error: reverted due to running out of funds");
+                        }
+                        Return::CallTooDeep => {
+                            node_info!("    Error: reverted with call too deep");
+                        }
+                        Return::Revert => {
                             if let Some(ref r) = info.out {
                                 if let Ok(reason) = decode_revert(r.as_ref(), None, None) {
                                     node_info!("    Error: reverted with '{}'", reason);
                                 } else {
-                                    node_info!("    Error: reverted without a reason string");
+                                    node_info!(
+                                        "    Error: reverted with custom error: {}",
+                                        hex::encode(r)
+                                    );
                                 }
                             } else {
-                                node_info!("    Error: reverted without a reason string");
+                                node_info!("    Error: reverted without a reason");
                             }
+                        }
+                        Return::OutOfGas => {
+                            node_info!("    Error: ran out of gas");
                         }
                         reason => {
                             node_info!("    Error: failed due to {:?}", reason);
@@ -845,6 +897,9 @@ impl Backend {
         let gas_limit = gas.unwrap_or(block_env.gas_limit);
         let mut env = self.env.read().clone();
         env.block = block_env;
+        // we want to disable this in eth_call, since this is common practice used by other node
+        // impls and providers <https://github.com/foundry-rs/foundry/issues/4388>
+        env.cfg.disable_block_gas_limit = true;
 
         if let Some(base) = max_fee_per_gas {
             env.block.basefee = base;
@@ -897,7 +952,7 @@ impl Backend {
         fee_details: FeeDetails,
         block_request: Option<BlockRequest>,
         opts: GethDebugTracingOptions,
-    ) -> Result<GethTrace, BlockchainError> {
+    ) -> Result<DefaultFrame, BlockchainError> {
         self.with_database_at(block_request, |state, block| {
             let mut inspector = Inspector::default().with_steps_tracing();
             let block_number = block.number;
@@ -1549,21 +1604,21 @@ impl Backend {
         opts: GethDebugTracingOptions,
     ) -> Result<GethTrace, BlockchainError> {
         if let Some(traces) = self.mined_geth_trace_transaction(hash, opts.clone()) {
-            return Ok(traces)
+            return Ok(GethTrace::Known(GethTraceFrame::Default(traces)))
         }
 
         if let Some(fork) = self.get_fork() {
             return Ok(fork.debug_trace_transaction(hash, opts).await?)
         }
 
-        Ok(GethTrace::default())
+        Ok(GethTrace::Known(GethTraceFrame::Default(Default::default())))
     }
 
     fn mined_geth_trace_transaction(
         &self,
         hash: H256,
         opts: GethDebugTracingOptions,
-    ) -> Option<GethTrace> {
+    ) -> Option<DefaultFrame> {
         self.blockchain.storage.read().transactions.get(&hash).map(|tx| tx.geth_trace(opts))
     }
 
@@ -1587,12 +1642,19 @@ impl Backend {
         &self,
         hash: H256,
     ) -> Result<Option<TransactionReceipt>, BlockchainError> {
-        if let tx @ Some(_) = self.mined_transaction_receipt(hash) {
-            return Ok(tx)
+        if let Some(receipt) = self.mined_transaction_receipt(hash) {
+            return Ok(Some(receipt.inner))
         }
 
         if let Some(fork) = self.get_fork() {
-            return Ok(fork.transaction_receipt(hash).await?)
+            let receipt = fork.transaction_receipt(hash).await?;
+            let number = self.convert_block_number(
+                receipt.clone().and_then(|r| r.block_number).map(|n| BlockNumber::from(n.as_u64())),
+            );
+
+            if fork.predates_fork_inclusive(number) {
+                return Ok(receipt)
+            }
         }
 
         Ok(None)
@@ -1611,7 +1673,7 @@ impl Backend {
     }
 
     /// Returns the transaction receipt for the given hash
-    fn mined_transaction_receipt(&self, hash: H256) -> Option<TransactionReceipt> {
+    pub(crate) fn mined_transaction_receipt(&self, hash: H256) -> Option<MinedTransactionReceipt> {
         let MinedTransaction { info, receipt, block_hash, .. } =
             self.blockchain.storage.read().transactions.get(&hash)?.clone();
 
@@ -1647,7 +1709,7 @@ impl Backend {
                 .unwrap_or_else(U256::max_value),
         };
 
-        Some(TransactionReceipt {
+        let inner = TransactionReceipt {
             transaction_hash: info.transaction_hash,
             transaction_index: info.transaction_index.into(),
             block_hash: Some(block_hash),
@@ -1688,7 +1750,9 @@ impl Backend {
             logs_bloom,
             transaction_type: None,
             effective_gas_price: Some(effective_gas_price),
-        })
+        };
+
+        Some(MinedTransactionReceipt { inner, out: info.out })
     }
 
     pub async fn transaction_by_block_number_and_index(
@@ -1951,9 +2015,20 @@ impl TransactionValidator for Backend {
             return Err(InvalidTransactionError::NonceTooLow)
         }
 
-        if (env.cfg.spec_id as u8) >= (SpecId::LONDON as u8) && tx.gas_price() < env.block.basefee {
-            warn!(target: "backend", "max fee per gas={}, too low, block basefee={}",tx.gas_price(),  env.block.basefee);
-            return Err(InvalidTransactionError::FeeTooLow)
+        if (env.cfg.spec_id as u8) >= (SpecId::LONDON as u8) {
+            if tx.gas_price() < env.block.basefee {
+                warn!(target: "backend", "max fee per gas={}, too low, block basefee={}",tx.gas_price(),  env.block.basefee);
+                return Err(InvalidTransactionError::FeeTooLow)
+            }
+
+            if let (Some(max_priority_fee_per_gas), Some(max_fee_per_gas)) =
+                (tx.essentials().max_priority_fee_per_gas, tx.essentials().max_fee_per_gas)
+            {
+                if max_priority_fee_per_gas > max_fee_per_gas {
+                    warn!(target: "backend", "max priority fee per gas={}, too high, max fee per gas={}", max_priority_fee_per_gas, max_fee_per_gas);
+                    return Err(InvalidTransactionError::TipAboveFeeCap)
+                }
+            }
         }
 
         let max_cost = tx.max_cost();

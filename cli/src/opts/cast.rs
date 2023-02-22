@@ -1,16 +1,16 @@
 use super::{ClapChain, EthereumOpts};
 use crate::{
     cmd::cast::{
-        call::CallArgs, create2::Create2Args, estimate::EstimateArgs, find_block::FindBlockArgs,
-        interface::InterfaceArgs, rpc::RpcArgs, run::RunArgs, send::SendTxArgs,
-        storage::StorageArgs, wallet::WalletSubcommands,
+        bind::BindArgs, call::CallArgs, create2::Create2Args, estimate::EstimateArgs,
+        find_block::FindBlockArgs, interface::InterfaceArgs, rpc::RpcArgs, run::RunArgs,
+        send::SendTxArgs, storage::StorageArgs, wallet::WalletSubcommands,
     },
     utils::parse_u256,
 };
 use clap::{Parser, Subcommand, ValueHint};
 use ethers::{
     abi::ethabi::ethereum_types::BigEndianHash,
-    types::{serde_helpers::Numeric, Address, BlockId, BlockNumber, NameOrAddress, H256, U256},
+    types::{serde_helpers::Numeric, Address, BlockId, NameOrAddress, H256, U256},
 };
 use std::{path::PathBuf, str::FromStr};
 
@@ -30,22 +30,32 @@ pub struct Opts {
 pub enum Subcommands {
     #[clap(name = "--max-int")]
     #[clap(visible_aliases = &["max-int", "maxi"])]
-    #[clap(about = "Get the maximum i256 value.")]
-    MaxInt,
+    #[clap(about = "Get the maximum value of the given integer type.")]
+    MaxInt {
+        #[clap(default_value = "int256")]
+        r#type: String,
+    },
     #[clap(name = "--min-int")]
     #[clap(visible_aliases = &["min-int", "mini"])]
-    #[clap(about = "Get the minimum i256 value.")]
-    MinInt,
+    #[clap(about = "Get the minimum value of the given integer type.")]
+    MinInt {
+        #[clap(default_value = "int256")]
+        r#type: String,
+    },
     #[clap(name = "--max-uint")]
     #[clap(visible_aliases = &["max-uint", "maxu"])]
-    #[clap(about = "Get the maximum u256 value.")]
-    MaxUint,
+    #[clap(about = "Get the maximum value of the given integer type.")]
+    MaxUint {
+        #[clap(default_value = "uint256")]
+        r#type: String,
+    },
     #[clap(name = "--address-zero", about = "Get zero address")]
     #[clap(visible_aliases = &["address-zero", "az"])]
     AddressZero,
     #[clap(name = "--hash-zero", about = "Get zero hash")]
     #[clap(visible_aliases = &["hash-zero", "hz"])]
     HashZero,
+
     #[clap(name = "--from-utf8")]
     #[clap(visible_aliases = &["from-utf8", "--from-ascii", "from-ascii", "fu", "fa"])]
     #[clap(about = "Convert UTF8 text to hex.")]
@@ -229,7 +239,11 @@ Examples:
     #[clap(visible_aliases = &["ac", "acl"])]
     #[clap(about = "Create an access list for a transaction.")]
     AccessList {
-        #[clap(help = "The destination of the transaction.",  value_parser = parse_name_or_address, value_name = "ADDRESS")]
+        #[clap(
+            help = "The destination of the transaction.",
+            value_parser = NameOrAddress::from_str,
+            value_name = "ADDRESS"
+        )]
         address: NameOrAddress,
         #[clap(help = "The signature of the function to call.", value_name = "SIG")]
         sig: String,
@@ -240,7 +254,6 @@ Examples:
             short = 'B',
             help = "The block height you want to query at.",
             long_help = "The block height you want to query at. Can also be the tags earliest, latest, or pending.",
-             value_parser = parse_block_id,
             value_name = "BLOCK"
         )]
         block: Option<BlockId>,
@@ -257,7 +270,6 @@ Examples:
         #[clap(
             help = "The block height you want to query at.",
             long_help = "The block height you want to query at. Can also be the tags earliest, latest, or pending.",
-            value_parser = parse_block_id,
             value_name = "BLOCK"
         )]
         block: BlockId,
@@ -464,11 +476,10 @@ Defaults to decoding output data. To decode input data pass --input or use cast 
             short = 'B',
             help = "The block height you want to query at.",
             long_help = "The block height you want to query at. Can also be the tags earliest, latest, or pending.",
-             value_parser = parse_block_id,
             value_name = "BLOCK"
         )]
         block: Option<BlockId>,
-        #[clap(help = "The address you want to get the nonce for.",  value_parser = parse_name_or_address, value_name = "WHO")]
+        #[clap(help = "The address you want to get the nonce for.", value_parser = NameOrAddress::from_str, value_name = "WHO")]
         who: NameOrAddress,
         #[clap(short, long, env = "ETH_RPC_URL", value_name = "URL")]
         rpc_url: Option<String>,
@@ -482,11 +493,10 @@ Defaults to decoding output data. To decode input data pass --input or use cast 
             short = 'B',
             help = "The block height you want to query at.",
             long_help = "The block height you want to query at. Can also be the tags earliest, latest, or pending.",
-             value_parser = parse_block_id,
             value_name = "BLOCK"
         )]
         block: Option<BlockId>,
-        #[clap(help = "The address you want to get the nonce for.",  value_parser = parse_name_or_address, value_name = "WHO")]
+        #[clap(help = "The address you want to get the nonce for.", value_parser = NameOrAddress::from_str, value_name = "WHO")]
         who: NameOrAddress,
         #[clap(short, long, env = "ETH_RPC_URL", value_name = "URL")]
         rpc_url: Option<String>,
@@ -557,7 +567,6 @@ Tries to decode the calldata using https://sig.eth.samczsun.com unless --offline
             short = 'B',
             help = "The block height you want to query at.",
             long_help = "The block height you want to query at. Can also be the tags earliest, latest, or pending.",
-             value_parser = parse_block_id,
             value_name = "BLOCK"
         )]
         block: Option<BlockId>,
@@ -573,14 +582,19 @@ Tries to decode the calldata using https://sig.eth.samczsun.com unless --offline
             short = 'B',
             help = "The block height you want to query at.",
             long_help = "The block height you want to query at. Can also be the tags earliest, latest, or pending.",
-             value_parser = parse_block_id,
             value_name = "BLOCK"
         )]
         block: Option<BlockId>,
-        #[clap(help = "The account you want to query",  value_parser = parse_name_or_address, value_name = "WHO")]
+        #[clap(
+            help = "The account you want to query",
+            value_parser = NameOrAddress::from_str,
+            value_name = "WHO"
+        )]
         who: NameOrAddress,
         #[clap(short, long, env = "ETH_RPC_URL", value_name = "URL")]
         rpc_url: Option<String>,
+        #[clap(long = "ether", short = 'e', help_heading = "format to ether")]
+        to_ether: bool,
     },
     #[clap(name = "basefee")]
     #[clap(visible_aliases = &["ba", "fee"])]
@@ -591,7 +605,6 @@ Tries to decode the calldata using https://sig.eth.samczsun.com unless --offline
             short = 'B',
             help = "The block height you want to query at.",
             long_help = "The block height you want to query at. Can also be the tags earliest, latest, or pending.",
-             value_parser = parse_block_id,
             value_name = "BLOCK"
         )]
         block: Option<BlockId>,
@@ -607,11 +620,10 @@ Tries to decode the calldata using https://sig.eth.samczsun.com unless --offline
             short = 'B',
             help = "The block height you want to query at.",
             long_help = "The block height you want to query at. Can also be the tags earliest, latest, or pending.",
-             value_parser = parse_block_id,
             value_name = "BLOCK"
         )]
         block: Option<BlockId>,
-        #[clap(help = "The contract address.",  value_parser = parse_name_or_address, value_name = "WHO")]
+        #[clap(help = "The contract address.", value_parser = NameOrAddress::from_str, value_name = "WHO")]
         who: NameOrAddress,
         #[clap(short, long, env = "ETH_RPC_URL", value_name = "URL")]
         rpc_url: Option<String>,
@@ -675,7 +687,7 @@ Tries to decode the calldata using https://sig.eth.samczsun.com unless --offline
         about = "Generate a storage proof for a given storage slot."
     )]
     Proof {
-        #[clap(help = "The contract address.",  value_parser = parse_name_or_address, value_name = "ADDRESS")]
+        #[clap(help = "The contract address.", value_parser = NameOrAddress::from_str, value_name = "ADDRESS")]
         address: NameOrAddress,
         #[clap(help = "The storage slot numbers (hex or decimal).",  value_parser = parse_slot, value_name = "SLOTS")]
         slots: Vec<H256>,
@@ -686,7 +698,6 @@ Tries to decode the calldata using https://sig.eth.samczsun.com unless --offline
             short = 'B',
             help = "The block height you want to query at.",
             long_help = "The block height you want to query at. Can also be the tags earliest, latest, or pending.",
-             value_parser = parse_block_id,
             value_name = "BLOCK"
         )]
         block: Option<BlockId>,
@@ -700,11 +711,10 @@ Tries to decode the calldata using https://sig.eth.samczsun.com unless --offline
             short = 'B',
             help = "The block height you want to query at.",
             long_help = "The block height you want to query at. Can also be the tags earliest, latest, or pending.",
-             value_parser = parse_block_id,
             value_name = "BLOCK"
         )]
         block: Option<BlockId>,
-        #[clap(help = "The address you want to get the nonce for.",  value_parser = parse_name_or_address, value_name = "WHO")]
+        #[clap(help = "The address you want to get the nonce for.", value_parser = NameOrAddress::from_str, value_name = "WHO")]
         who: NameOrAddress,
         #[clap(short, long, env = "ETH_RPC_URL", value_name = "URL")]
         rpc_url: Option<String>,
@@ -719,7 +729,7 @@ Tries to decode the calldata using https://sig.eth.samczsun.com unless --offline
         address: String,
         #[clap(short, help = "The output directory to expand source tree into.", value_hint = ValueHint::DirPath, value_name = "DIRECTORY")]
         directory: Option<PathBuf>,
-        #[clap(long, env = "ETHERSCAN_API_KEY", value_name = "KEY")]
+        #[clap(long, short, env = "ETHERSCAN_API_KEY", value_name = "KEY")]
         etherscan_api_key: Option<String>,
     },
     #[clap(name = "wallet", visible_alias = "w", about = "Wallet management utilities.")]
@@ -734,6 +744,14 @@ Tries to decode the calldata using https://sig.eth.samczsun.com unless --offline
         long_about = "Generate a Solidity interface from a given ABI. Currently does not support ABI encoder v2."
     )]
     Interface(InterfaceArgs),
+    #[clap(
+        name = "bind",
+        visible_alias = "bi",
+        about = "Generate a rust binding from a given ABI.",
+        long_about = "Generate a rust binding from a given ABI. Currently does not support ABI encoder v2."
+    )]
+    Bind(BindArgs),
+
     #[clap(name = "sig", visible_alias = "si", about = "Get the selector for a function.")]
     Sig {
         #[clap(
@@ -794,24 +812,6 @@ pub struct ToBaseArgs {
     pub base_in: Option<String>,
 }
 
-pub fn parse_name_or_address(s: &str) -> eyre::Result<NameOrAddress> {
-    Ok(if s.starts_with("0x") {
-        NameOrAddress::Address(s.parse()?)
-    } else {
-        NameOrAddress::Name(s.into())
-    })
-}
-
-pub fn parse_block_id(s: &str) -> eyre::Result<BlockId> {
-    Ok(match s {
-        "earliest" => BlockId::Number(BlockNumber::Earliest),
-        "latest" => BlockId::Number(BlockNumber::Latest),
-        "pending" => BlockId::Number(BlockNumber::Pending),
-        s if s.starts_with("0x") => BlockId::Hash(s.parse()?),
-        s => BlockId::Number(BlockNumber::Number(s.parse::<u64>()?.into())),
-    })
-}
-
 pub fn parse_slot(s: &str) -> eyre::Result<H256> {
     Numeric::from_str(s)
         .map_err(|e| eyre::eyre!("Could not parse slot number: {e}"))
@@ -821,6 +821,7 @@ pub fn parse_slot(s: &str) -> eyre::Result<H256> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ethers::types::BlockNumber;
 
     #[test]
     fn parse_call_data() {
@@ -842,5 +843,48 @@ mod tests {
                 unreachable!()
             }
         };
+    }
+
+    #[test]
+    fn parse_block_ids() {
+        struct TestCase {
+            input: String,
+            expect: BlockId,
+        }
+
+        let test_cases = [
+            TestCase {
+                input: "0".to_string(),
+                expect: BlockId::Number(BlockNumber::Number(0u64.into())),
+            },
+            TestCase {
+                input: "0x56462c47c03df160f66819f0a79ea07def1569f8aac0fe91bb3a081159b61b4a"
+                    .to_string(),
+                expect: BlockId::Hash(
+                    "0x56462c47c03df160f66819f0a79ea07def1569f8aac0fe91bb3a081159b61b4a"
+                        .parse()
+                        .unwrap(),
+                ),
+            },
+            TestCase { input: "latest".to_string(), expect: BlockId::Number(BlockNumber::Latest) },
+            TestCase {
+                input: "earliest".to_string(),
+                expect: BlockId::Number(BlockNumber::Earliest),
+            },
+            TestCase {
+                input: "pending".to_string(),
+                expect: BlockId::Number(BlockNumber::Pending),
+            },
+            TestCase { input: "safe".to_string(), expect: BlockId::Number(BlockNumber::Safe) },
+            TestCase {
+                input: "finalized".to_string(),
+                expect: BlockId::Number(BlockNumber::Finalized),
+            },
+        ];
+
+        for test in test_cases {
+            let result: BlockId = test.input.parse().unwrap();
+            assert_eq!(result, test.expect);
+        }
     }
 }

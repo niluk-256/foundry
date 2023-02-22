@@ -5,7 +5,7 @@ use ethers::{
     abi::HumanReadableParser,
     core::types::{BlockId, BlockNumber::Latest, H256},
     providers::Middleware,
-    types::{Address, I256, U256},
+    types::Address,
     utils::keccak256,
 };
 use foundry_cli::{
@@ -37,14 +37,14 @@ async fn main() -> eyre::Result<()> {
     let opts = Opts::parse();
     match opts.sub {
         // Constants
-        Subcommands::MaxInt => {
-            println!("{}", I256::MAX);
+        Subcommands::MaxInt { r#type } => {
+            println!("{}", SimpleCast::max_int(&r#type)?);
         }
-        Subcommands::MaxUint => {
-            println!("{}", U256::MAX);
+        Subcommands::MinInt { r#type } => {
+            println!("{}", SimpleCast::min_int(&r#type)?);
         }
-        Subcommands::MinInt => {
-            println!("{}", I256::MIN);
+        Subcommands::MaxUint { r#type } => {
+            println!("{}", SimpleCast::max_int(&r#type)?);
         }
         Subcommands::AddressZero => {
             println!("{:?}", Address::zero());
@@ -178,6 +178,7 @@ async fn main() -> eyre::Result<()> {
             println!("{}", SimpleCast::calldata_encode(sig, &args)?);
         }
         Subcommands::Interface(cmd) => cmd.run()?.await?,
+        Subcommands::Bind(cmd) => cmd.run()?.await?,
         Subcommands::PrettyCalldata { calldata, offline } => {
             let calldata = stdin::unwrap_line(calldata)?;
             println!("{}", pretty_calldata(&calldata, offline).await?);
@@ -214,10 +215,15 @@ async fn main() -> eyre::Result<()> {
                 Cast::new(provider).age(block.unwrap_or(BlockId::Number(Latest))).await?
             );
         }
-        Subcommands::Balance { block, who, rpc_url } => {
+        Subcommands::Balance { block, who, rpc_url, to_ether } => {
             let rpc_url = try_consume_config_rpc_url(rpc_url)?;
             let provider = try_get_http_provider(rpc_url)?;
-            println!("{}", Cast::new(provider).balance(who, block).await?);
+            let value = Cast::new(provider).balance(who, block).await?;
+            if to_ether {
+                println!("{}", SimpleCast::from_wei(&value.to_string(), "eth")?);
+            } else {
+                println!("{value}");
+            }
         }
         Subcommands::BaseFee { block, rpc_url } => {
             let rpc_url = try_consume_config_rpc_url(rpc_url)?;

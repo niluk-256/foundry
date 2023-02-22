@@ -887,11 +887,15 @@ impl<'a, W: Write> Formatter<'a, W> {
         last: SurroundingChunk,
         mut fun: impl FnMut(&mut Self, bool) -> Result<()>,
     ) -> Result<()> {
-        write_chunk!(self, first.loc_before(), first.loc_next(), "{}", first.content)?;
+        let first_chunk =
+            self.chunk_at(first.loc_before(), first.loc_next(), first.spaced, first.content);
+        self.write_chunk(&first_chunk)?;
 
         let multiline = !self.try_on_single_line(|fmt| {
             fun(fmt, false)?;
-            write_chunk!(fmt, last.loc_before(), last.loc_next(), "{}", last.content)?;
+            let last_chunk =
+                fmt.chunk_at(last.loc_before(), last.loc_next(), last.spaced, &last.content);
+            fmt.write_chunk(&last_chunk)?;
             Ok(())
         })?;
 
@@ -904,7 +908,9 @@ impl<'a, W: Write> Formatter<'a, W> {
             if !last.content.trim_start().is_empty() {
                 self.write_whitespace_separator(true)?;
             }
-            write_chunk!(self, last.loc_before(), last.loc_next(), "{}", last.content)?;
+            let last_chunk =
+                self.chunk_at(last.loc_before(), last.loc_next(), last.spaced, &last.content);
+            self.write_chunk(&last_chunk)?;
         }
 
         Ok(())
@@ -1931,16 +1937,48 @@ impl<'a, W: Write> Visitor for Formatter<'a, W> {
                         _ => write_chunk!(self, loc.start(), "{int}{n}")?,
                     }
                 }
-                Type::Mapping(loc, from, to) => {
-                    write_chunk!(self, loc.start(), "mapping(")?;
+                Type::Mapping { loc, key, key_name, value, value_name } => {
                     let arrow_loc = self.find_next_str_in_src(loc.start(), "=>");
-                    let key_chunk = self.visit_to_chunk(from.loc().start(), arrow_loc, from)?;
-                    self.write_chunk(&key_chunk)?;
-                    write!(self.buf(), " => ")?;
-                    let close_paren_loc = self.find_next_in_src(to.loc().end(), ')');
-                    let value_chunk = self.visit_to_chunk(to.loc().start(), close_paren_loc, to)?;
-                    self.write_chunk(&value_chunk)?;
-                    write!(self.buf(), ")")?;
+                    let close_paren_loc =
+                        self.find_next_in_src(value.loc().end(), ')').unwrap_or(loc.end());
+                    let first = SurroundingChunk::new(
+                        "mapping(",
+                        Some(loc.start()),
+                        Some(key.loc().start()),
+                    );
+                    let last = SurroundingChunk::new(")", Some(close_paren_loc), Some(loc.end()))
+                        .non_spaced();
+                    self.surrounded(first, last, |fmt, multiline| {
+                        fmt.grouped(|fmt| {
+                            key.visit(fmt)?;
+
+                            if let Some(name) = key_name {
+                                let end_loc = arrow_loc.unwrap_or(value.loc().start());
+                                write_chunk!(fmt, name.loc.start(), end_loc, " {}", name)?;
+                            } else if let Some(arrow_loc) = arrow_loc {
+                                fmt.write_postfix_comments_before(arrow_loc)?;
+                            }
+
+                            let mut write_arrow_and_value = |fmt: &mut Self| {
+                                write!(fmt.buf(), "=> ")?;
+                                value.visit(fmt)?;
+                                if let Some(name) = value_name {
+                                    write_chunk!(fmt, name.loc.start(), " {}", name)?;
+                                }
+                                Ok(())
+                            };
+
+                            let rest_str = fmt.simulate_to_string(&mut write_arrow_and_value)?;
+                            let multiline = multiline && !fmt.will_it_fit(rest_str);
+                            fmt.write_whitespace_separator(multiline)?;
+
+                            write_arrow_and_value(fmt)?;
+
+                            fmt.write_postfix_comments_before(close_paren_loc)?;
+                            fmt.write_prefix_comments_before(close_paren_loc)
+                        })?;
+                        Ok(())
+                    })?;
                 }
                 Type::Function { .. } => self.visit_source(*loc)?,
             },
@@ -2955,17 +2993,26 @@ impl<'a, W: Write> Visitor for Formatter<'a, W> {
         }
 
         if let Some(first) = chunks.first_mut() {
-            if first.prefixes.is_empty() && first.postfixes_before.is_empty() {
+            if first.prefixes.is_empty() &&
+                first.postfixes_before.is_empty() &&
+                !self.config.bracket_spacing
+            {
                 first.needs_space = Some(false);
             }
         }
         let multiline = self.are_chunks_separated_multiline("{}}", &chunks, ",")?;
         self.indented_if(multiline, 1, |fmt| fmt.write_chunks_separated(&chunks, ",", multiline))?;
 
-        let prefix = if multiline && !self.is_beginning_of_line() { "\n" } else { "" };
+        let prefix = if multiline && !self.is_beginning_of_line() {
+            "\n"
+        } else if self.config.bracket_spacing {
+            " "
+        } else {
+            ""
+        };
         let closing_bracket = format!("{prefix}{}", "}");
         let closing_bracket_loc = args.last().unwrap().loc.end();
-        write_chunk_spaced!(self, closing_bracket_loc, Some(false), "{closing_bracket}")?;
+        write_chunk!(self, closing_bracket_loc, "{closing_bracket}")?;
 
         Ok(())
     }
@@ -3626,4 +3673,5 @@ mod tests {
     test_directory! { TrailingComma }
     test_directory! { PragmaDirective }
     test_directory! { Annotation }
+    test_directory! { MappingType }
 }

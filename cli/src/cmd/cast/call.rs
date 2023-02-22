@@ -1,9 +1,6 @@
 // cast estimate subcommands
 use crate::{
-    opts::{
-        cast::{parse_block_id, parse_name_or_address},
-        EthereumOpts, TransactionOpts,
-    },
+    opts::{EthereumOpts, TransactionOpts},
     utils::parse_ether_value,
 };
 use cast::{Cast, TxBuilder};
@@ -15,10 +12,15 @@ use ethers::{
 use eyre::WrapErr;
 use foundry_common::try_get_http_provider;
 use foundry_config::{Chain, Config};
+use std::str::FromStr;
 
 #[derive(Debug, Parser)]
 pub struct CallArgs {
-    #[clap(help = "The destination of the transaction.", value_parser = parse_name_or_address, value_name = "TO")]
+    #[clap(
+        help = "The destination of the transaction.", 
+        value_name = "TO",
+        value_parser = NameOrAddress::from_str
+    )]
     to: Option<NameOrAddress>,
 
     #[clap(help = "The signature of the function to call.", value_name = "SIG")]
@@ -42,7 +44,12 @@ pub struct CallArgs {
     #[clap(flatten)]
     eth: EthereumOpts,
 
-    #[clap(long, short, help = "the block you want to query, can also be earliest/latest/pending", value_parser = parse_block_id, value_name = "BLOCK")]
+    #[clap(
+        long,
+        short,
+        help = "the block you want to query, can also be earliest/latest/pending",
+        value_name = "BLOCK"
+    )]
     block: Option<BlockId>,
 
     #[clap(subcommand)]
