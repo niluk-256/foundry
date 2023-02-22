@@ -70,6 +70,12 @@ docker pull ghcr.io/foundry-rs/foundry:latest
 
 For examples and guides on using this image, see the [Docker section](https://book.getfoundry.sh/tutorials/foundry-docker.html) in the book.
 
+## Installing for Windows
+If you're using Windows as your operating system, it's recommended to install WSL 2 in order to have a Linux environment available.
+Here are the steps to install WSL 2 on your Windows machine:
+<br/>
+ [WSL for Windows](https://docs.microsoft.com/en-us/windows/wsl/install-win10) <br/>
+
 ### Manual Download
 
 You can manually download nightly releases [here](https://github.com/foundry-rs/foundry/releases).
